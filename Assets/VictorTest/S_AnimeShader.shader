@@ -1,12 +1,22 @@
-Shader "Aloha/S_AnimeShader"
+Shader "Aloha/Anime_FaceShading"
 {
     Properties
     {
+        // Main texture of Face
         _MainTex ("Texture", 2D) = "white" {}
-        _LightSmooth ("Light Smooth", Float) = 0.1
+
+        // Shadow Color
+        _ShadowDarkness ("Shadow Darkeness", Range(0, 1)) = 0.1
+
+        // Shadow Threshold
+        _LightSmooth ("Light Smooth", Range(0, 1)) = 0.1
+        _ShadowDarkThreshold ("Dark Shadow Threshold", Range(0, 1)) = 0.33
+        _ShadowLightThreshold ("Light Shadow Threshold", Range(0, 1)) = 0.66
 
         _HeadFrontVector ("Character Facing Vector", Vector) = (0, 0, 0)
         _HeadRightVector ("Character Right Vector", Vector) = (0, 0, 0)
+
+        _HeadCenterPoint ("Center Point of Head", Vector) = (0, 0, 0)
     }
     SubShader
     {
@@ -16,6 +26,8 @@ Shader "Aloha/S_AnimeShader"
         Pass
         {
             CGPROGRAM
+            // Upgrade NOTE: excluded shader from DX11; has structs without semantics (struct v2f members facePosition)
+            #pragma exclude_renderers d3d11
             #pragma vertex vert
             #pragma fragment frag
 
@@ -30,18 +42,27 @@ Shader "Aloha/S_AnimeShader"
 
             struct v2f
             {
+                // System Variables
                 float2 uv : TEXCOORD0;
                 float3 worldNormal : TEXCOORD1;
                 float3 worldPos : TEXCOORD2;
                 float4 vertex : SV_POSITION;
+
+                // Custom Variables
+                float3 faceVector : TEXCOORD3;
             };
 
             sampler2D _MainTex;
             float4 _MainTex_ST;
             float _LightSmooth;
+            float _ShadowDarkness;
+
+            float _ShadowDarkThreshold;
+            float _ShadowLightThreshold;
 
             float4 _HeadFrontVector;
             float4 _HeadRightVector;
+            float3 _HeadCenterPoint;
 
             fixed3 RGBtoHSV(fixed3 rgb)
             {
@@ -128,14 +149,20 @@ Shader "Aloha/S_AnimeShader"
                 fixed m = v - c;
                 return rgb + m; 
             }
+            
 
             v2f vert (appdata v)
             {
                 v2f o;
+
+                // System Variables setup
                 o.vertex = UnityObjectToClipPos(v.vertex);
                 o.uv = TRANSFORM_TEX(v.uv, _MainTex);
                 o.worldPos = mul(unity_ObjectToWorld, v.vertex).xyz;
-                o.worldNormal = normalize(mul((float3x3)unity_WorldToObject, v.normal));             
+                o.worldNormal = normalize(mul((float3x3)unity_WorldToObject, v.normal));   
+
+                // Custome Variables setup
+                o.faceVector = normalize(o.worldPos - _HeadCenterPoint.xyz);
 
                 return o;
             }
@@ -156,17 +183,28 @@ Shader "Aloha/S_AnimeShader"
                 float u = dot(-mainLightDirection.xyz, headspace_x.xyz);
                 float v = dot(-mainLightDirection.xyz, headspace_y.xyz);
                 float w = dot(-mainLightDirection.xyz, headspace_z.xyz);
-                float4 p_light_to_plane = float4(u, v, w, 1);
+                float3 light_headspace = float3(u, v, w);
+
+                u = dot(i.faceVector, headspace_x.xyz);
+                v = dot(i.faceVector, headspace_y.xyz);
+                w = dot(i.faceVector, headspace_z.xyz);
+                float3 faceVector_headspace = float3(u, v, w);
+                float faceLuminosity = -dot(normalize(light_headspace.xz), faceVector_headspace.xz);
 
                 // Get Shadow                
                 float shadow = dot(mainLightDirection, i.worldNormal);
                 float smooth = smoothstep(0, _LightSmooth, shadow);
                 fixed3 tex_HSV = RGBtoHSV(col.rgb);
-                tex_HSV = fixed3(tex_HSV.r, saturate(tex_HSV.y + 0.1), saturate(tex_HSV.z - 0.1));
+                tex_HSV = fixed3(tex_HSV.r, saturate(tex_HSV.y + _ShadowDarkness * 1.3f), saturate(tex_HSV.z - _ShadowDarkness));
                 fixed4 col_shadow = fixed4(HSVtoRGB(tex_HSV.rgb), col.a);
 
-                // return lerp(col_shadow, col, smooth);
-                return fixed4(p_light_to_plane.xyz, 1);
+                // Shadow Thresholding
+                float shadowAlpha = faceLuminosity;
+                if (shadowAlpha < _ShadowDarkThreshold) shadowAlpha = 0.0f;
+                else if (shadowAlpha < _ShadowLightThreshold) shadowAlpha = 0.5f;
+                else shadowAlpha = 1.0f;
+
+                return lerp(col_shadow, col, shadowAlpha);
             }
             ENDCG
         }
